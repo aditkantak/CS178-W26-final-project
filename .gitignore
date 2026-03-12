@@ -1,6 +1,7 @@
 data/
 .venv/
 losses/
+weights/
 *.ipynb
 __pycache__/
 todo.md
