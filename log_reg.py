@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from model_training import train
+from model_training import train, get_data
 
 class Logistic_Regression(nn.Module):
     def __init__(self, input_size, output_size):
@@ -13,7 +13,7 @@ class Logistic_Regression(nn.Module):
         self.loss_fn = nn.CrossEntropyLoss()
 
     def forward(self, X, y=None):
-        X = torch.flatten(X, start_dim=1) #flatten into 1 dimensional
+        X = torch.flatten(X, start_dim=1) #flatten into b, 32*32*3
         
         logits = self.linear(X) # return raw logits so that torch cross entropy loss works 
         
@@ -44,6 +44,8 @@ if __name__ == "__main__":
 
     model = Logistic_Regression(INPUT_SIZE, OUTPUT_SIZE)
 
-    train(model, BATCH_SIZE, EPOCHS, LR, EVAL_INTERVAL)
+    train_data, test_data = get_data("none")
+
+    train(model, train_data, BATCH_SIZE, EPOCHS, LR, eval_interval=EVAL_INTERVAL)#, val_data=test_data)
 
 

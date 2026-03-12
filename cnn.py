@@ -1,5 +1,6 @@
 from torch import nn
 import torch
+from model_training import train, get_data
 
 class VGGLikeCNN (nn.Module):
     def __init__(self):
@@ -65,3 +66,15 @@ class VGGLikeCNN (nn.Module):
         preds = torch.argmax(logits, dim=-1)
 
         return preds
+    
+if __name__ == "__main__":
+    model = VGGLikeCNN()
+
+    train_data, test_data = get_data("standardize")
+
+    BATCH_SIZE = 500
+    LR = 1e-1
+    EPOCHS = 20
+    EVAL_INTERVAL = 10
+
+    train(model, train_data, BATCH_SIZE, EPOCHS, LR, val_data=test_data)
