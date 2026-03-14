@@ -1,17 +1,21 @@
 from torchvision import datasets
-from torchvision.transforms import ToTensor, PILToTensor, Normalize, Compose, ConvertImageDtype
+from torchvision.transforms import ToTensor, PILToTensor, Normalize, Compose, ConvertImageDtype, RandomCrop
 
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data import random_split
 from torch import nn
 import torch
 
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score
+
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 from datetime import datetime
+from zoneinfo import ZoneInfo
+from contextlib import redirect_stdout
 
-def get_data(transform, val_split = 0.0):
+def get_data(transform, random_crop=False, val_split = 0.0):
     """
     Load train and test datasets with the specified transform applied. ts docstring generated with claude. If `val_split` is provided, it takes that split out of the test set and returns a validation set.
     Args:
@@ -28,26 +32,39 @@ def get_data(transform, val_split = 0.0):
             ``(train_data, val_data, test_data)`` if ``val_split > 0``,
             otherwise ``(train_data, test_data)``.
     """
+    transforms = []
+
+    if random_crop:
+        print(f"Random Crop will be used with padding=4")
+        transforms.append(RandomCrop(32, padding=4))
+
     if transform == "none":
         print("No transform selected. Data as integers in range [0, 255]\n")
-        transform_stack = Compose([PILToTensor(), ConvertImageDtype(torch.float32)])
+        transforms.extend([PILToTensor(), ConvertImageDtype(torch.float32)])
     
     elif transform == "normalize":
         print("Data normalized to range [0, 1]\n")
-        transform_stack = ToTensor()
+        transforms.extend([ToTensor()])
         
     elif transform == "standardize":
         means = torch.tensor([0.4914, 0.4822, 0.4465])
         stds = torch.tensor([0.2470, 0.2435, 0.2616]) # both are precomputed
 
-        transform_stack = Compose([ToTensor(), Normalize(means, stds)])
+        transforms.extend([ToTensor(), Normalize(means, stds)])
         print(f"Data standardized with means {means} and stds {stds}\n")
 
     else:
         raise ValueError("Invalid Preprocessing type")
 
-    train_data = datasets.CIFAR10("data", train=True, download=True, transform=transform_stack)
-    test_data = datasets.CIFAR10("data", train=False, download=True, transform=transform_stack)
+    train_transform_stack = Compose(transforms)
+    if type(transforms[0]) == RandomCrop:
+        print("No random crop in test set")
+        test_transform_stack = Compose(transforms[1:])
+    else:
+        test_transform_stack = train_transform_stack
+
+    train_data = datasets.CIFAR10("data", train=True, download=True, transform=train_transform_stack)
+    test_data = datasets.CIFAR10("data", train=False, download=True, transform=test_transform_stack)
     
     if val_split > 0:
         test_data, val_data = random_split(test_data, [1-val_split, val_split])
@@ -61,26 +78,22 @@ def model_eval(model, device, val_loader):
     
     losses = []
 
-    for batch in val_loader:
-        samples, targets = batch
-        samples = samples.to(device)
-        targets = targets.to(device)
+    with torch.no_grad():
+        for batch in val_loader:
+            samples, targets = batch
+            samples = samples.to(device)
+            targets = targets.to(device)
 
-        with torch.no_grad():
-            _, loss = model(samples, targets)
+            with torch.no_grad():
+                _, loss = model(samples, targets)
 
-        losses.append(loss.item())
+            losses.append(loss.item())
 
     model.train()
 
     return losses
 
-def training_loop(model, device, train_loader, num_epochs, lr, eval_interval = 10, /, val_loader=None, optim="SGD"):
-    if optim == "SGD":
-        optimizer = torch.optim.SGD(model.parameters(), lr=lr)
-    elif optim == "AdamW":
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-
+def training_loop(model, device, train_loader, num_epochs, optimizer, lr_scheduler, eval_interval = 10, /, val_loader=None):
     train_losses = []
     test_losses = []
     eval_points = []
@@ -129,6 +142,7 @@ def training_loop(model, device, train_loader, num_epochs, lr, eval_interval = 1
         
         print("\n"+"-"*100)
         print(f"Epoch {epoch+1} complete.")
+        print(f"LR: {lr_scheduler.get_last_lr()[0]}")
         print(f"Avg train loss: {avg(epoch_train_losses)}")
         
         if val_loader is not None:
@@ -142,10 +156,12 @@ def training_loop(model, device, train_loader, num_epochs, lr, eval_interval = 1
         if val_loader is not None:
             test_losses.extend(epoch_test_losses)
 
+        lr_scheduler.step()
+
     return eval_points, train_losses, test_losses
 
 # plot losses on a graph
-def plot_losses(eval_points, train_losses, test_losses, num_batches, epochs, save_loss_graph, filename):
+def plot_losses(eval_points, train_losses, test_losses, num_batches, epochs):
     fig, axes = plt.subplots()
 
     axes.plot(eval_points, train_losses, label="Train Loss")
@@ -155,84 +171,132 @@ def plot_losses(eval_points, train_losses, test_losses, num_batches, epochs, sav
     axes.legend()
 
     axes.set_ylabel("Loss (Cross Entropy)")
+    y_max = max(np.percentile(train_losses, 99), np.percentile(test_losses, 99))*1.1
+    axes.set_ylim(0, y_max)
 
     axes.set_xlabel("Epoch")
-    axes.set_xticks(range(0, (num_batches*epochs)+1, num_batches))
-    axes.set_xticklabels([f"{i}" for i in range(epochs+1)])
+
+    # tick_interval = 5 if epochs > 20 else 1
+    axes.set_xticks(range(0, (num_batches*epochs)+1, num_batches))#*tick_interval))
+    axes.set_xticklabels([f"{i}" for i in range(0, epochs+1)])#, tick_interval)])
 
     axes.set_title("Loss over time")
 
-    plt.show()
+    return fig, axes
 
-    if save_loss_graph:
-        filedir = Path(".") / "losses"
-        if not filedir.exists(): filedir.mkdir()
-        
-        file_path = filedir / f"{filename}.png"
-
-        fig.savefig(file_path)
-        print(f"Saved loss graph to {str(file_path)}")
-
-def train(model, train_data, batch_size, num_epochs, lr, /, val_data=None, eval_interval=10, plot_loss=True, save_loss_graph=True, save_model = True, optimizer="SGD"):
-    """
-    Build data loaders, trains the model, and plots results.
-
-    Args:
-        model (nn.Module): The model to train. Must accept
-            ``(samples, targets)`` and return ``(output, loss)``.
-        train_data (Dataset): Training dataset.
-        batch_size (int): Mini-batch size for both train and validation
-            loaders.
-        num_epochs (int): Number of full passes over the training set.
-        lr (float): Learning rate passed to the optimizer.
-        val_data (Dataset | None, optional): Validation dataset. If ``None``,
-            no validation evaluation is performed. Defaults to ``None``.
-        eval_interval (int, optional): Evaluate every this many batches.
-            Defaults to 10.
-        plot_loss (bool, optional): If ``True``, display and optionally save a
-            loss curve after training. Defaults to ``True``.
-        save_loss_graph (bool, optional): If ``True`` (and *plot_loss* is also
-            ``True``), persist the loss plot as a PNG. Defaults to ``True``.
-        save_model (bool, optional): If ``True``, saves the model in `weights` subdirectory. Defaults to ``True``.
-        optimizer (str, optional): Optimizer name — ``"SGD"`` or ``"AdamW"``.
-            Defaults to ``"SGD"``.
-    """
+def train(model, train_data, batch_size, num_epochs, lr, /, val_data=None, eval_interval=10, optim="SGD", lr_decay_factor=1, l2_reg_strength=0.1, plot_loss=True, save_loss_graph=True, save_model = True):
+    print()
+    print(f"Training {num_epochs} epochs, starting with learning rate {lr}, with {optim} optimizer, with gamma {lr_decay_factor}")
+    
+    #configuring train loader
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+    
+    #configuring val loader
     if val_data is None:
         val_loader = None
     else:
         val_loader = DataLoader(val_data, batch_size=batch_size)
 
+    # configuring optimizer
+    if optim == "SGD":
+        optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=l2_reg_strength)
+    elif optim == "AdamW":
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=l2_reg_strength)
 
+    # configuring learning rate scheduler
+    lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, lr_decay_factor)
+
+    # configuring device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f"Starting training on {device}")
-    print()
-
-    if val_loader is not None:
-        eval_points, train_losses, test_losses = training_loop(model, device, train_loader, num_epochs, lr, eval_interval, val_loader=val_loader, optim=optimizer)
-    else:
-        eval_points, train_losses, test_losses = training_loop(model, device, train_loader, num_epochs, lr, eval_interval, optim=optimizer)
+    # get start time
+    start_dt = datetime.now(ZoneInfo("America/Los_Angeles"))
+    start_timestamp = start_dt.strftime("%m/%d/%Y %I:%M:%S %p")
 
     model_name = type(model).__name__
-    
-    filename = f"{model_name}_{datetime.now().strftime("%y-%m-%d_%H-%M-%S")}"
+    filedir_name = f"{model_name}_{start_dt.strftime("%y-%m-%d_%H-%M-%S")}"
+    filedir = Path(".") / "runs" /filedir_name
+    if not filedir.exists(): filedir.mkdir()
 
+    log_file = filedir / "training_log.txt"
+
+    with open(log_file, "w", encoding="utf-8", buffering=1) as file:
+        with redirect_stdout(file):
+            print(f"Model type: {model_name}")
+            print(f"Epochs: {num_epochs}")
+            print(f"Starting LR: {lr}")
+            if lr_decay_factor < 1: print(f"Gamma: {lr_decay_factor}")
+            print(f"Optimizer: {optim}")
+            print()
+            print(f"Starting training on {device} at {start_timestamp}.")
+            print()
+
+            # train model and get points for graph
+            eval_points, train_losses, test_losses = training_loop(model, device, train_loader, num_epochs, optimizer, lr_scheduler, eval_interval, val_loader=val_loader)
+
+            # calculate elapsed time
+            end_dt = datetime.now(ZoneInfo("America/Los_Angeles"))
+            end_timestamp = end_dt.strftime("%m/%d/%Y %I:%M:%S %p")
+            print(f"Training ended at {end_timestamp}.")
+            print(f"Training elapsed time (hh:mm:ss): {str(end_dt-start_dt)}\n")
+
+    print()
+    print(f"Saved training log saved to {str(log_file)}")
+
+    # loss curve graph
     if plot_loss:
         train_losses = np.array(train_losses)
         test_losses = np.array(test_losses)
         eval_points = np.array(eval_points)
 
-        plot_losses(eval_points, train_losses, test_losses, len(train_loader), num_epochs, save_loss_graph, filename)
+        fig, axes = plot_losses(eval_points, train_losses, test_losses, len(train_loader), num_epochs)
 
+        axes.set_title(f"{model_name}, lr={lr}, gamma={lr_decay_factor}, {num_epochs} epochs")
+
+        plt.show()
+
+        if save_loss_graph:
+            filedir = Path(".") / filedir_name
+            if not filedir.exists(): filedir.mkdir()
+            
+            file_path = filedir / f"loss_curve.png"
+
+            fig.savefig(file_path)
+            print(f"Saved loss graph to {str(file_path)}")
+
+    # saves model weights
     if save_model:
-        weights_dir = Path(".") / "weights"
-        if not weights_dir.exists(): weights_dir.mkdir()
+        filedir = Path(".") / filedir_name
+        if not filedir.exists(): filedir.mkdir()
 
-        weights_file = weights_dir / f"{filename}.pth"
+        weights_file = filedir / f"weights.pth"
 
         torch.save(model.state_dict(), weights_file)
 
         print(f"Saved model weights to {weights_file}")
+
+def get_predictions(model, dataset, k=0):
+    test_dl = DataLoader(dataset, 1)
+
+    all_targets = []
+    all_preds = []
+
+    model.eval()
+
+    device = next(model.parameters()).device
+
+    with torch.no_grad():
+        for batch in test_dl:
+            sample, target = batch
+
+            sample = sample.to(device)
+            target = target.to(device)
+
+            pred = model.predict(sample, k)
+            
+            all_targets.append(target.item())
+            all_preds.append(pred.item())
+
+    return all_preds, all_targets
 
     

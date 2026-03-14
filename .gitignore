@@ -1,6 +1,6 @@
 data/
 .venv/
-losses/
-weights/
 __pycache__/
 todo.md
+report/
+runs/
