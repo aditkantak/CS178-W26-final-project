@@ -34,7 +34,7 @@ if not log_paths:
     print("No training_log.txt files found under runs/")
     raise SystemExit(1)
 
-fig, (ax_train, ax_test) = plt.subplots(1, 2, figsize=(14, 5), sharey=True)
+fig, (ax_train, ax_test) = plt.subplots(1, 2, figsize=(22, 8), sharey=True)
 
 for path in log_paths:
     meta, train, test = parse_log(path)

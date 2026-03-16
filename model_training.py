@@ -6,8 +6,6 @@ from torch.utils.data import random_split, Subset
 from torch import nn
 import torch
 
-from dataset_wrappers import TrainSet
-
 from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay, accuracy_score
 
 import numpy as np
@@ -64,6 +62,10 @@ def get_data(transform, random_crop=False, horizontal_flip=True, val_split = 0.0
         return train_data, val_data, test_data
     else:
         return train_data, test_data
+    
+def get_dataset_as_numpy(torch_dataset):
+    samples, targets = next(iter(DataLoader(torch_dataset, batch_size=len(torch_dataset))))
+    return (samples.numpy(), targets.numpy())
 
 # eval function
 def model_eval(model, device, val_loader):
