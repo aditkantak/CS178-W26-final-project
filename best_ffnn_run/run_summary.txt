@@ -1,0 +1,15 @@
+Single FFNN Training Run
+============================================================
+
+hidden_sizes: [256, 128]
+learning_rate: 0.001
+activation: ReLU
+batch_size: 128
+optimizer: AdamW
+epochs: 75
+
+best_epoch: 38
+best_validation_accuracy: 0.5297
+best_validation_loss: 1.4193
+test_accuracy: 0.5210
+test_loss: 1.4227
